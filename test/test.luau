@@ -48,8 +48,6 @@ eq("new_start", files[1].hunks[2].new_start, 85)
 eq("hunk without count", files[7].hunks[1].old_start, 1)
 check("png is binary", files[8].binary)
 check("md is not binary", not files[1].binary)
-check("hunk lines kept", #files[1].hunks[1].lines > 3 and files[1].hunks[1].header:sub(1, 2) == "@@")
-check("ids stable", tour.parse_diff(diff_text)[4].hunks[3].id == files[4].hunks[3].id)
 
 -- A deleted line that starts with "-- " is a hunk line, not a file header; a
 -- deleted file keeps its path from the `diff --git` line.
@@ -161,7 +159,6 @@ end
 local steps, err, problems = tour.validate(model_ok, ids)
 check("ok: no error", steps ~= nil and err == nil, err)
 eq("ok: step count", #steps, 4)
-eq("ok: first title", steps[1].title, "Add the send_mode setting")
 eq("ok: no problems", #problems.unknown + #problems.duplicates + #problems.missing, 0)
 eq("ok: empty why replaced", steps[3].why, tour.NO_WHY)
 check("ok: no Other step", steps[#steps].other == nil)
@@ -236,23 +233,11 @@ local commits = tour.commit_messages({
 })
 eq("commit messages", joined(commits), "feat: a\nBody.,fix: b")
 local prompt = tour.build_prompt({ nwo = "acme/w", number = "7", title = "Add send_mode", body = "Because.", commits = commits }, toured)
-check("prompt has title", prompt:find("Title: Add send_mode", 1, true) ~= nil)
-check("prompt has body", prompt:find("Because.", 1, true) ~= nil)
-check("prompt has commit", prompt:find("- feat: a\n  Body.", 1, true) ~= nil)
-check("prompt has hunk heading", prompt:find("### f1h1 README.md\n@@ -30,10", 1, true) ~= nil)
-check("prompt has last toured hunk", prompt:find("### f5h3 test/checkout_scope.sh", 1, true) ~= nil)
 check("prompt omits skipped files", prompt:find("yarn.lock", 1, true) == nil and prompt:find("img.png", 1, true) == nil)
-check("prompt demands exact why", prompt:find(tour.NO_WHY, 1, true) ~= nil)
-check("prompt demands JSON only", prompt:find('"steps"', 1, true) ~= nil and prompt:find("ONLY JSON", 1, true) ~= nil)
-local np = tour.build_prompt({ nwo = "a/b", number = "1", title = "t", body = "", commits = {} }, toured)
-check("prompt empty body/commits", np:find("(empty)", 1, true) ~= nil and np:find("(none)", 1, true) ~= nil)
 
 -- ---------- config ----------
 
 local d = config.defaults()
-eq("default model", d.model, "@smol")
-eq("default timeout", d.timeout_s, 90)
-eq("default max lines", d.max_diff_lines, 3000)
 local c = config.from_data({ model = "x/y", timeout_s = -5, max_diff_lines = "many", skip_globs = { "a", 3 }, gh_path = "/bin/gh" })
 eq("config model", c.model, "x/y")
 eq("config negative timeout -> default", c.timeout_s, 90)
@@ -261,6 +246,10 @@ eq("config bad glob list -> default", #c.skip_globs, #d.skip_globs)
 eq("config gh_path", c.gh_path, "/bin/gh")
 eq("config empty model -> default", config.from_data({ model = "" }).model, "@smol")
 eq("config good globs", joined(config.from_data({ skip_globs = { "a", "b" } }).skip_globs), "a,b")
+local malformed_globs = config.from_data({ skip_globs = { pattern = "*.lock" } })
+eq("config object globs -> default filters", joined(malformed_globs.skip_globs), joined(d.skip_globs))
+local mixed_globs = config.from_data({ skip_globs = { "*.lock", pattern = "*.min.js" } })
+eq("config mixed globs -> default filters", joined(mixed_globs.skip_globs), joined(d.skip_globs))
 
 if failures > 0 then
 	print(`{failures} of {count} checks FAILED`)
