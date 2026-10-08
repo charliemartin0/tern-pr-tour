@@ -106,6 +106,8 @@ assert_no_spinner() {
 # Override inherited fixture modes as well as all runtime storage locations.
 export OMP_FIXTURE_MODE=ok GH_FIXTURE_MODE=ok OMP_TIMEOUT_S=90 OMP_HAS_TOOLS=0
 
+# Set PR_TOUR_E2E_TOOLS_ONLY=1 to reproduce the tool-refusal regression alone.
+if [ "${PR_TOUR_E2E_TOOLS_ONLY:-0}" != "1" ]; then
 # --- 1. fresh run with a working model ---
 cache1="$tmp/cache1"
 start_stack omp-ok "$cache1"
@@ -176,10 +178,10 @@ stop_stack
 
 # --- 7. bounded model timeout ---
 rm -f "$tmp/omp.calls"
-export OMP_FIXTURE_MODE=timeout OMP_TIMEOUT_S=0.2
+export OMP_FIXTURE_MODE=timeout OMP_TIMEOUT_S=1
 cache5="$tmp/cache5"
 start_stack omp-ok "$cache5"
-wait_for "tour generation timed out after 0.2s" 10 || fail "timeout did not surface"
+wait_for "tour generation timed out after 1s" 10 || fail "timeout did not surface"
 assert_no_spinner
 find_scrolled "config.luau" || fail "timeout fallback lacks plain diff"
 [ "$(calls)" = "1" ] || fail "timeout must call omp once"
@@ -224,6 +226,7 @@ for mode in unsigned no-access malformed; do
 	stop_stack
 	scenario=$((scenario + 1))
 done
+fi
 
 # --- 12. discovered tools must prevent sending PR content to the model ---
 rm -f "$tmp/omp.calls"
@@ -238,4 +241,8 @@ find_scrolled "config.luau" || fail "tool refusal lacks plain diff fallback"
 echo "ok 12: discovered tools refuse model generation"
 stop_stack
 
-echo "PASS: pr-tour e2e (12 scenarios)"
+if [ "${PR_TOUR_E2E_TOOLS_ONLY:-0}" = "1" ]; then
+	echo "PASS: pr-tour e2e (tool-refusal scenario)"
+else
+	echo "PASS: pr-tour e2e (12 scenarios)"
+fi
