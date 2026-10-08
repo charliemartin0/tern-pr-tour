@@ -3,7 +3,7 @@
 -- diff and PR text, `omp` groups the hunks into steps with what/why, and the
 -- result is cached per PR head so reopening never calls the model again. If
 -- generation fails the block shows the plain diff by file instead.
--- Keys: n next step, p previous step, r regenerate, o open the PR on GitHub.
+-- One scrolling page: every step in order. Keys: r regenerate, o open the PR on GitHub.
 -- Launch: pr-tour.tour <owner/repo> <number> [sha] [title]
 
 local tour = require("./tour")
@@ -31,7 +31,6 @@ type State = {
 	total_files: number,
 	steps: { tour.Step },
 	source: string,
-	step: number,
 	by_id: { [string]: tour.HunkRef },
 	gen: number, -- bumped on every (re)start; stale callbacks compare and bail
 }
@@ -76,7 +75,6 @@ local function fail(state: State, message: string)
 	state.error = message
 	state.steps = tour.plain_steps(state.toured)
 	state.source = "plain diff"
-	state.step = 1
 	state.cx:render()
 end
 
@@ -86,7 +84,6 @@ local function finish_ready(state: State, steps: { tour.Step }, source: string)
 	state.steps = steps
 	state.source = source
 	state.phase = "ready"
-	state.step = 1
 	state.cx:render()
 end
 
@@ -199,7 +196,7 @@ local function start(state: State, force: boolean)
 	local gen = state.gen
 	state.cfg, state.cfg_error = config.load()
 	state.toured, state.not_toured, state.capped, state.total_files = {}, {}, false, 0
-	state.steps, state.by_id, state.step, state.source = {}, {}, 1, ""
+	state.steps, state.by_id, state.source = {}, {}, ""
 	-- The args come from launch args or a link; never hand an unchecked value to gh.
 	if not string.match(state.nwo, "^[%w%-_.]+/[%w%-_.]+$") or not string.match(state.number, "^%d+$") then
 		state.phase = "failed"
@@ -341,31 +338,25 @@ local function main_view(state: State): Node
 		if state.phase == "generating" then
 			table.insert(parts, ui.progress(nil, "Generating tour with " .. state.cfg.model .. "…"))
 		end
-		local plain = state.phase ~= "ready"
-		if plain or (state.steps[1] and state.steps[1].plain) then
+		-- A numbered outline first (tours only), then every step in order.
+		if state.phase == "ready" and state.steps[1] and not state.steps[1].plain then
+			local outline: { Node } = {}
 			for i, step in state.steps do
-				table.insert(parts, step_card(state, i, step))
+				table.insert(outline, ui.text({ ui.span(i .. ". " .. step.title, "muted") }))
 			end
-		elseif #state.steps > 0 then
-			local index: { Node } = {}
-			for i, step in state.steps do
-				local current = i == state.step
-				table.insert(index, ui.text({ ui.span((if current then "▸ " else "  ") .. i .. ". " .. step.title, if current then "accent" else "muted") }))
-			end
-			table.insert(parts, ui.lines(index))
-			local cur = state.steps[state.step]
-			if cur then
-				table.insert(parts, step_card(state, state.step, cur))
-			end
+			table.insert(parts, ui.lines(outline))
+		end
+		for i, step in state.steps do
+			table.insert(parts, step_card(state, i, step))
 		end
 		local skipped = not_toured_section(state)
 		if skipped then table.insert(parts, skipped) end
 	end
-	-- A new id per phase/step: the scroll offset of the previous content otherwise
-	-- survives into the next step and leaves the view mid-card.
+	-- A new id per phase: the scroll offset of the plain diff shown while generating
+	-- otherwise survives into the finished tour and leaves the view mid-page.
 	local node = ui.col(parts)
 	local p: { [string]: any } = node.p or {}
-	p.id = "tour-" .. state.gen .. "-" .. state.phase .. "-" .. state.step
+	p.id = "tour-" .. state.gen .. "-" .. state.phase
 	node.p = p
 	return node
 end
@@ -373,15 +364,13 @@ end
 local function dock_view(state: State): Node
 	local status: { Span | string } = {}
 	if state.phase == "ready" and #state.steps > 0 and not state.steps[1].plain then
-		table.insert(status, ui.span("step " .. state.step .. " of " .. #state.steps, "strong"))
+		table.insert(status, ui.span(#state.steps .. " steps", "strong"))
 		table.insert(status, ui.span("   "))
 	end
-	table.insert(status, ui.span("n next   p prev   r regenerate   o open PR", "dim"))
+	table.insert(status, ui.span("r regenerate   o open PR", "dim"))
 	return ui.col({
 		ui.text(status),
 		ui.row({
-			badge("Prev", "prev", "muted"),
-			badge("Next", "next", "accent"),
 			badge("Regenerate", "regen", "muted"),
 			badge("Open PR", "open", "muted"),
 		}),
@@ -390,21 +379,8 @@ end
 
 -- ---------- actions ----------
 
-local function move(state: State, delta: number): boolean
-	local target = math.max(1, math.min(#state.steps, state.step + delta))
-	if #state.steps == 0 or state.steps[1].plain or target == state.step then
-		return false
-	end
-	state.step = target
-	return true
-end
-
 local function act(state: State, name: string): boolean
-	if name == "next" then
-		return move(state, 1)
-	elseif name == "prev" then
-		return move(state, -1)
-	elseif name == "regen" then
+	if name == "regen" then
 		if state.phase == "loading" or state.phase == "generating" then
 			return true
 		end
@@ -432,7 +408,7 @@ tern.block.define("tour", {
 			cx = cx, args = a, nwo = nwo, number = number, sha = a[3] or "", title = a[4] or "",
 			cfg = cfg, cfg_error = cfg_error, phase = "loading", error = nil, body = "",
 			toured = {}, not_toured = {}, capped = false, total_files = 0, steps = {}, source = "",
-			step = 1, by_id = {}, gen = 0,
+			by_id = {}, gen = 0,
 		}
 		running[cx.pane] = state
 		start(state, false)
@@ -452,11 +428,7 @@ tern.block.define("tour", {
 			return false
 		end
 		local k = key.text or key.name
-		if k == "n" then
-			return act(state, "next")
-		elseif k == "p" then
-			return act(state, "prev")
-		elseif k == "r" then
+		if k == "r" then
 			return act(state, "regen")
 		elseif k == "o" then
 			return act(state, "open")

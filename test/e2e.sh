@@ -3,7 +3,7 @@
 # endpoint, private daemon) with fake `gh` and `omp` binaries from test/fixtures/bin. Every
 # run uses a private daemon, state, config and cache dir; nothing of the user's
 # Tern setup is touched.
-#   1. omp-ok:   tour renders (first step title + "model: @smol"), cache file written, omp called once.
+#   1. omp-ok:   tour renders as one scrolling page (first step title + "model: @smol", every step card, Not toured at the end), cache file written, omp called once.
 #   2. restart:  same cache -> header says "cached", omp NOT called again.
 #   3. regen:    `r` key calls omp again (cache refreshed).
 #   4. omp-fail: error line "omp failed: model not found" and the plain diff by file.
@@ -91,7 +91,18 @@ wait_for "model: @smol" 5 || fail "header lacks 'model: @smol'"
 [ -f "$cache1/tern-pr-tour/$cache_file" ] || fail "cache file $cache_file missing: $(ls "$cache1/tern-pr-tour" 2>&1)"
 [ "$(calls)" = "1" ] || fail "omp calls after fresh run: $(calls), want 1"
 grep -q -- "--model @smol" "$tmp/omp.calls" || fail "omp not called with --model @smol: $(cat "$tmp/omp.calls")"
+# The page is one scroll: the Not toured section sits at the bottom, and the a11y
+# tree only holds what is on screen, so scroll down first.
+scroll_to_end() {
+	tern ctl --control "$sock" a11y set-scroll-offset .sf-main 0,100000 >/dev/null 2>&1
+	sleep 1
+	tern ctl --control "$sock" a11y >"$tmp/a11y.json" 2>/dev/null
+}
+scroll_to_end
 has "Not toured" || fail "no 'Not toured' section"
+# Single page: after scrolling down, the last step's card is on the same page (the outline at the top is off screen by then).
+last_title="4. $(jq -r '.steps[3].title' "$fx/model_ok.json")"
+[ "$(jq --arg s "$last_title" '[.. | strings | select(. == $s)] | length' "$tmp/a11y.json")" -ge 1 ] || fail "last step card missing from the single page"
 has "yarn.lock" || fail "yarn.lock not listed as not toured"
 echo "ok 1: tour rendered, cache written, omp called once"
 stop_stack
