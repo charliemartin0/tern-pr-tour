@@ -55,11 +55,11 @@ local function list_or(data: any, key: string, default: { string }): { string }
 	end
 	local out: { string } = {}
 	local n = #v
-	for i = 1, n do
-		if type(v[i]) ~= "string" then
+	for k, item in v do
+		if type(k) ~= "number" or k % 1 ~= 0 or k < 1 or k > n or type(item) ~= "string" then
 			return { table.unpack(default) }
 		end
-		out[i] = v[i]
+		out[k] = item
 	end
 	return out
 end

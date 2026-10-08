@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-checks:
+    name: Plugin checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Luau 0.741
+        run: |
+          set -euo pipefail
+          luau_dir="$RUNNER_TEMP/luau"
+          mkdir -p "$luau_dir"
+          curl --fail --silent --show-error --location \
+            --output "$luau_dir/luau-ubuntu.zip" \
+            https://github.com/luau-lang/luau/releases/download/0.741/luau-ubuntu.zip
+          echo "134dc762ad26232af83e43f98dec03ff6030dd3a4452f9408b9d50ccea025503  $luau_dir/luau-ubuntu.zip" | sha256sum --check -
+          unzip -q "$luau_dir/luau-ubuntu.zip" -d "$luau_dir"
+          chmod +x "$luau_dir/luau" "$luau_dir/luau-compile"
+          echo "$luau_dir" >> "$GITHUB_PATH"
+
+      - name: Compile modules
+        run: luau-compile --null bins.luau config.luau host.luau tour.luau window.luau
+
+      - name: Run unit tests
+        run: LUAU="$RUNNER_TEMP/luau/luau" bash test/unit.sh

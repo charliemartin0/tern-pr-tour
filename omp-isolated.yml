@@ -1,0 +1,34 @@
+# Run-only overlay; never changes the user's omp settings.
+# Provider IDs verified against omp 18.8.4. The host checks the actual tool
+# registry before sending PR content, so unknown providers fail closed.
+disabledProviders:
+  - native
+  - agent-plugins
+  - agents
+  - agents-md
+  - claude
+  - claude-md
+  - claude-plugins
+  - cline
+  - codex
+  - cursor
+  - gemini
+  - github
+  - mcp-json
+  - omp-plugins
+  - opencode
+  - vscode
+  - windsurf
+  - ssh-json
+memory:
+  backend: off
+autolearn:
+  enabled: false
+advisor:
+  enabled: false
+speechgen:
+  enabled: false
+externalThinking: false
+includeWorkspaceTree: false
+workspace:
+  additionalDirectories: []

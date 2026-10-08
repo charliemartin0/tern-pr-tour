@@ -1,10 +1,10 @@
 # pr-tour
 
-A Tern block that shows a pull request's diff as a guided tour. `gh` fetches
-the diff, `omp` groups the hunks into logical steps with a **what** and a
-**why** above each step's hunks, and the result is cached per PR head so
-reopening a PR never calls the model again. If the model fails, the block
-shows the plain diff by file instead.
+[![CI](https://github.com/charliemartin0/tern-pr-tour/actions/workflows/ci.yml/badge.svg)](https://github.com/charliemartin0/tern-pr-tour/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+A Tern block for [omp](https://github.com/can1357/oh-my-pi) users that turns a pull request's diff into a guided tour, with a **what** and a **why** above each group of hunks.
+It fetches the PR with `gh`, asks your configured omp model to organize the selected diff, caches successful tours per PR head, and shows a plain diff if tour generation fails after the diff is fetched.
 
 ![tour](test/screenshots/tour.png)
 ![fallback](test/screenshots/fallback.png)
@@ -12,22 +12,27 @@ shows the plain diff by file instead.
 ## Requirements
 
 - Tern 0.6.0 or newer.
-- [`gh`](https://cli.github.com), signed in (`gh auth login`). Whatever account
-  is active is used; no account switching.
+- [`gh`](https://cli.github.com), signed in (`gh auth login`), with the active
+  account able to access the PR. No account switching is performed.
 - [`omp`](https://github.com/can1357/oh-my-pi) on the same machine, with a
-  working model for the configured `model` selector.
+  working model for the configured `model` selector. Verified with omp 18.8.4;
+  the backend must support `--config` and RPC `get_state.data.dumpTools`.
 
 ## Install
 
 ```sh
-tern plugin link ~/Dev/tern-plugins/pr-tour
+git clone https://github.com/charliemartin0/tern-pr-tour.git && cd tern-pr-tour && tern plugin link .
 ```
+
+Linking loads the plugin into the daemon and existing windows; no Tern restart
+or reload is needed.
 
 ## Use
 
-- From the **graphite** plugin: the **Diff** button on any PR row opens
-  `pr-tour.tour` (graphite ≥ 0.4.0; see its README). graphite shows that button
-  only while it detects this plugin, so linking pr-tour is what turns it on.
+- From the [**graphite** plugin](https://github.com/charliemartin0/tern-graphite#diff):
+  the **Diff** button on any PR row opens `pr-tour.tour` (graphite ≥ 0.4.0).
+  graphite detects linked plugins on start and every 30 seconds, so allow up to
+  30 seconds and the next inbox render for the button to appear.
   By default it opens in a new tab; graphite's `diff_open` config opens it as a
   block beside or below the focused pane instead (`"tab"`, `"beside"`, `"below"`).
 - Directly: open the block kind `pr-tour.tour`, in a tab or as a block in any
@@ -61,7 +66,7 @@ back per key.
 |-----|---------|---------|
 | `model` | `"@smol"` | Passed to `omp --model`. Role aliases such as `@smol` and concrete selectors both work. |
 | `timeout_s` | `90` | Kill `omp` after this many seconds and fall back to the plain diff. Must be > 0. |
-| `max_diff_lines` | `3000` | Cap on hunk lines sent to the model. Files are toured in diff order until the cap; the first file is always toured. The header says how many files were toured. Must be > 0. |
+| `max_diff_lines` | `3000` | Soft cap on hunk lines sent to the model. The first eligible file is included even if it exceeds the cap; later files are included when they fit the remaining budget, so a skipped large file does not prevent later small files from fitting. The header says how many files were toured. Must be > 0. |
 | `skip_globs` | lockfiles, `*.min.*`, `*.map`, `*.snap`, `**/generated/**`, `*.g.cs`, `*.Designer.cs`, `*.pb.go`, `dist/**` | Files matching any glob (full path or basename; `**` crosses `/`, `*` does not) are not toured. A list of strings or the default list. |
 | `gh_path` | `""` | Absolute path to `gh`; empty resolves `command -v gh` through a login shell. |
 | `omp_path` | `""` | Absolute path to `omp`; empty resolves `command -v omp` through a login shell. |
@@ -74,42 +79,103 @@ validated steps and a timestamp. A new push changes the head sha, so it gets a
 fresh tour; `r` forces a new one for the same sha. Failed runs are never
 cached. Delete the directory to clear everything.
 
-## How the model is used
+The cache can contain sensitive source-derived text. Temporary prompt files
+also contain the selected source and PR metadata; cleanup may be interrupted,
+so inspect and remove leftover prompt files when handling sensitive PRs.
 
-One `omp -p --no-tools --no-session --mode text --model <model> @prompt.md`
-call per tour. The prompt carries the PR title, body, commit messages and every
-toured hunk with an id (`f<file>h<hunk>`). The answer must be JSON; the plugin
+## Privacy / what is sent where
+
+The PR title, body, commit messages and selected diff are sent to the provider
+and model configured by omp. Before touring private source, consider whether
+you have permission to send it to that provider and its data-handling policy.
+omp also supplies generated workstation/model metadata (such as OS and
+architecture). GitHub receives the authenticated `gh` requests; the model
+provider receives the generation prompt. Neither is a local-only operation.
+The plugin has no raw diff byte cap of its own; Tern's process-output limit is
+16 MiB. `max_diff_lines` controls selection after the diff has been fetched,
+not how many bytes `gh` may return.
+
+Before sending PR content, the plugin starts omp in RPC mode with no prompt
+and checks its actual callable-tool registry. A nonempty registry, failed
+check, or unsupported RPC response refuses generation and shows the plain diff.
+The check has a five-second timeout and does not call the model.
+
+Both launches use the bundled `omp-isolated.yml` as a run-only `--config`
+overlay, disabling discovered MCP servers, ambient project instructions and
+automatic tool additions without changing your omp settings. They also use
+`--no-tools --no-extensions --no-skills --no-rules --no-lsp --no-session --no-title`,
+a fixed `--system-prompt` and an empty `--append-system-prompt`.
+`--no-tools` alone disables built-ins, **not MCP**. The overlay's provider IDs
+were checked against omp 18.8.4; the registry check fails closed if tools remain
+exposed in another version. This is not an OS sandbox. PR text remains a
+prompt-injection surface: even without tools, malicious instructions may
+mislead the model's explanations. Review the underlying diff yourself.
+
+After the check, one `omp -p --mode text --model <model> @prompt.md`
+model call generates the tour, with the same isolation options.
+The prompt carries the PR title, body, commit messages and every toured hunk
+with an id (`f<file>h<hunk>`). The answer must be JSON; the plugin
 extracts the outermost `{…}` and repairs it so every hunk id appears exactly
 once: unknown ids are dropped, repeats keep their first step, forgotten hunks
 land in a final **Other changes** step. An answer with no usable step at all
 (for example all-unknown ids) counts as a failure, shows the error, and is not
 cached.
 
-## Fallback
+## Troubleshooting
 
-`gh` failures (not signed in, no access, PR not found) show `gh: <first stderr
-line>`; a `gh` or `omp` that cannot be started at all shows the spawn error with
-the same prefix. `omp` failures show `omp failed: <first stderr line>`, `tour generation
-timed out after <n>s`, or `model returned invalid JSON: <reason>`. In all cases
-the toured files are listed as a plain diff, one card per file.
+- **`gh` is not signed in:** run `gh auth login`; the plugin uses the active
+  account. Authentication errors show `gh: <first stderr line>`.
+- **No access or PR not found:** check that the active `gh` account can access
+  the repository and PR. A `gh` failure before the diff is fetched cannot show
+  a plain-diff fallback because there is no diff to render.
+- **Backend missing or cannot start:** install `gh` and `omp`, ensure your login
+  shell can find them, or set `gh_path` / `omp_path` to their absolute paths.
+  Spawn errors have the corresponding `gh:` or `omp failed:` prefix.
+- **Model failure or timeout:** check that the configured omp model works.
+  Failures show `omp failed: <first stderr line>` or
+  `tour generation timed out after <n>s`; adjust `timeout_s` if needed.
+- **Invalid JSON:** `model returned invalid JSON: <reason>` means the model did
+  not return a usable tour. Try `r` or a different model selector.
+- **Tools exposed or verification failed:** `omp exposes tools; refusing to send
+  PR content` or `omp: could not verify disabled tools` means no PR content was
+  sent for generation. Use an omp version supporting the registry check and
+  bundled isolation settings; do not bypass the check for untrusted PRs.
 
-## Testing
+After a diff has been fetched, tour-generation failures show the selected
+files as a plain diff, one card per file. Failed tours are not cached.
+
+## Contributing and testing
+
+CI compiles every module with Luau and runs the unit tests on pushes to master
+and pull requests targeting master. The same checks locally, with the [Luau CLI](https://github.com/luau-lang/luau/releases)
+(CI pins 0.741):
 
 ```sh
-# Pure logic (diff parser, filters, prompt, validation) — needs the Luau CLI:
-LUAU=/path/to/luau bash test/unit.sh
-
-# Real Tern window, private daemon/state/cache, fake gh and omp (needs tern and jq):
-bash test/e2e.sh
+luau-compile --null bins.luau config.luau host.luau tour.luau window.luau
+bash test/unit.sh
 ```
 
-`test/e2e.sh` links only this plugin in a private config dir and drives six
-scenarios: fresh tour on one scrolling page (cache written, one model call), cached reopen (no model
-call), `r` regenerate (second call), failing model (error line + plain diff),
-and an `omp` / `gh` path that cannot be spawned (error line, no stuck spinner).
-The window it opens is a real one (`tern serve` loads only fixture plugins).
+Fixtures live in `test/fixtures`; the unit suite exercises the diff parser,
+filters, prompt and validation without calling a live provider.
+Render checks need a real Tern window, `tern` and `jq`:
+
+```sh
+bash test/e2e.sh
+# Optional real omp MCP-discovery regression (no model/API call):
+PR_TOUR_REAL_OMP="$(command -v omp)" bash test/e2e.sh
+```
+
+The end-to-end script links this checkout in private Tern config/state/cache
+and uses fake `gh` and `omp`, leaving your normal plugin links untouched. It
+covers a fresh tour, cached reopen, `r` regeneration, a failing model, backend
+spawn failures, timeout, invalid model JSON, gh authentication/access failures,
+malformed PR metadata and refusal of a backend exposing tools.
 
 Screenshots: both come from a real window against the public PR
 `charliemartin0/tern-graphite#3` with real `gh` and `omp`; `fallback.png` uses
 `model = "nonexistent/bogus"`. A `tern ctl shot` re-initialises blocks right
 after it captures, so take one shot per fresh state.
+
+## License
+
+[MIT](LICENSE).

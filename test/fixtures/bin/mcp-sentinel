@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Harmless MCP server: records launch and advertises one tool; never executes it.
+set -eu
+printf '%s\n' launched >>"$MCP_SENTINEL_LOG"
+while IFS= read -r request; do
+  method=$(jq -r '.method // ""' <<<"$request")
+  id=$(jq -c '.id // null' <<<"$request")
+  [ "$id" != null ] || continue
+  case "$method" in
+    initialize) result='{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"pr-tour-test","version":"1"}}' ;;
+    tools/list) result='{"tools":[{"name":"sentinel","description":"Never call this fixture tool","inputSchema":{"type":"object","properties":{}}}]}' ;;
+    *) result='{}' ;;
+  esac
+  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$result"
+done

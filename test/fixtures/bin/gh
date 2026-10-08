@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Fake gh: `gh pr diff ...` and `gh pr view ...` serve the fixtures.
 fx=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+case "${GH_FIXTURE_MODE:-ok}" in
+	unsigned) echo 'not logged into any GitHub hosts' >&2; exit 1 ;;
+	no-access) echo 'Could not resolve to a PullRequest with the number of 7' >&2; exit 1 ;;
+	malformed)
+		if [ "$1 $2" = "pr view" ]; then printf '%s\n' '{"headRefOid":'; exit 0; fi
+		;;
+esac
 case "$1 $2" in
 	"pr diff") cat "$fx/pr.diff" ;;
 	"pr view") cat "$fx/pr_view.json" ;;
