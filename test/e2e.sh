@@ -20,6 +20,7 @@ sha=$(jq -r .headRefOid "$fx/pr_view.json")
 first_title=$(jq -r '.steps[0].title' "$fx/model_ok.json")
 cache_file="acme_widgets__7__${sha}.json"
 daemon_pid=""; serve_pid=""; sock=""
+stack_count=0
 
 stop_stack() {
 	if [ -n "$serve_pid" ] && kill -0 "$serve_pid" 2>/dev/null; then
@@ -47,20 +48,22 @@ fail() {
 	exit 1
 }
 
-# Private plugin dir: only pr-tour, linked to this checkout.
-mkdir -p "$tmp/config/tern/plugins" "$tmp/config/tern/plugin-data/pr-tour" "$tmp/state" "$tmp/logs"
-printf '%s' "$root" >"$tmp/config/tern/plugins/pr-tour.path"
 
 # start_stack <omp-binary-name | absolute path> <cache-dir> [gh path]
 start_stack() {
 	local omp="$1" cache="$2" gh="${3:-$fx/bin/gh}"
+	stack_count=$((stack_count + 1))
+	local config_dir="$tmp/config-$stack_count"
+	# Reopen only the cache, not persisted panes from earlier scenarios.
+	mkdir -p "$config_dir/tern/plugins" "$config_dir/tern/plugin-data/pr-tour" "$tmp/logs"
+	printf '%s' "$root" >"$config_dir/tern/plugins/pr-tour.path"
 	case "$omp" in /*) ;; *) omp="$fx/bin/$omp" ;; esac
 	jq -n --arg gh "$gh" --arg omp "$omp" --argjson timeout "${OMP_TIMEOUT_S:-90}" \
 		'{gh_path: $gh, omp_path: $omp, timeout_s: $timeout}' \
-		>"$tmp/config/tern/plugin-data/pr-tour/config.json"
+		>"$config_dir/tern/plugin-data/pr-tour/config.json"
 	sock="$tmp/ctl.sock"; rm -f "$sock"
-	export TERN_CONFIG_DIR="$tmp/config/tern" TERN_DAEMON_SOCKET="$tmp/daemon.sock" \
-		XDG_STATE_HOME="$tmp/state" XDG_CONFIG_HOME="$tmp/config" XDG_DATA_HOME="$tmp/data" \
+	export TERN_CONFIG_DIR="$config_dir/tern" TERN_DAEMON_SOCKET="$tmp/daemon-$stack_count.sock" \
+		XDG_STATE_HOME="$tmp/state-$stack_count" XDG_CONFIG_HOME="$config_dir" XDG_DATA_HOME="$tmp/data-$stack_count" \
 		XDG_CACHE_HOME="$cache" STENCIL_LOG_DIR="$tmp/logs" OMP_CALLS="$tmp/omp.calls"
 	rm -f "$TERN_DAEMON_SOCKET"
 	tern daemon --socket "$TERN_DAEMON_SOCKET" >>"$tmp/log" 2>&1 &
@@ -184,7 +187,7 @@ start_stack omp-ok "$cache5"
 wait_for "tour generation timed out after 1s" 10 || fail "timeout did not surface"
 assert_no_spinner
 find_scrolled "config.luau" || fail "timeout fallback lacks plain diff"
-[ "$(calls)" = "1" ] || fail "timeout must call omp once"
+[ "$(calls)" = "1" ] || fail "timeout model calls: $(calls), want 1"
 [ ! -f "$cache5/tern-pr-tour/$cache_file" ] || fail "timeout wrote a cache"
 echo "ok 7: model timeout shows plain diff without caching"
 stop_stack
@@ -240,6 +243,30 @@ find_scrolled "config.luau" || fail "tool refusal lacks plain diff fallback"
 [ ! -f "$cache/tern-pr-tour/$cache_file" ] || fail "tool-bearing omp wrote a cache"
 echo "ok 12: discovered tools refuse model generation"
 stop_stack
+
+# Optional integration contract with the real backend, without a model call.
+# An ambient Windsurf server must not even start, let alone expose a tool.
+if [ -n "${PR_TOUR_REAL_OMP:-}" ]; then
+	probe_dir="$tmp/windsurf"
+	mkdir -p "$probe_dir/.windsurf"
+	jq -n --arg server "$fx/bin/mcp-sentinel" --arg log "$probe_dir/launched" \
+		'{mcpServers:{"pr-tour-test":{command:"bash",args:[$server],env:{MCP_SENTINEL_LOG:$log}}}}' \
+		>"$probe_dir/.windsurf/mcp_config.json"
+	printf 'mcp:\n  startupTimeoutMs: 0\n' >"$probe_dir/wait.yml"
+	(
+		cd "$probe_dir"
+		printf '%s\n' '{"id":"pr-tour-tools","type":"get_state"}' |
+			"$PR_TOUR_REAL_OMP" --no-tools --no-extensions --no-skills --no-rules \
+				--no-lsp --no-session --no-title --mode rpc --no-ui \
+				--model "${PR_TOUR_REAL_MODEL:-@smol}" \
+				--config "$root/omp-isolated.yml" --config "$probe_dir/wait.yml" \
+				--system-prompt 'Write a PR tour. Do not perform actions.' --append-system-prompt ''
+	) >"$probe_dir/response.jsonl" || fail "real omp registry probe failed"
+	jq -se '[.[] | select(.id == "pr-tour-tools" and .success == true and .data.dumpTools == [])] | length == 1' \
+		"$probe_dir/response.jsonl" >/dev/null || fail "real omp still exposes tools"
+	[ ! -e "$probe_dir/launched" ] || fail "ambient Windsurf MCP server started"
+	echo "ok 13: real omp suppresses ambient Windsurf MCP discovery without a model call"
+fi
 
 if [ "${PR_TOUR_E2E_TOOLS_ONLY:-0}" = "1" ]; then
 	echo "PASS: pr-tour e2e (tool-refusal scenario)"

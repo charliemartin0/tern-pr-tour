@@ -15,7 +15,8 @@ It fetches the PR with `gh`, asks your configured omp model to organize the sele
 - [`gh`](https://cli.github.com), signed in (`gh auth login`), with the active
   account able to access the PR. No account switching is performed.
 - [`omp`](https://github.com/can1357/oh-my-pi) on the same machine, with a
-  working model for the configured `model` selector.
+  working model for the configured `model` selector. Verified with omp 18.8.4;
+  the backend must support `--config` and RPC `get_state.data.dumpTools`.
 
 ## Install
 
@@ -82,18 +83,38 @@ The cache can contain sensitive source-derived text. Temporary prompt files
 also contain the selected source and PR metadata; cleanup may be interrupted,
 so inspect and remove leftover prompt files when handling sensitive PRs.
 
-## How the model is used
+## Privacy / what is sent where
 
 The PR title, body, commit messages and selected diff are sent to the provider
 and model configured by omp. Before touring private source, consider whether
 you have permission to send it to that provider and its data-handling policy.
+omp also supplies generated workstation/model metadata (such as OS and
+architecture). GitHub receives the authenticated `gh` requests; the model
+provider receives the generation prompt. Neither is a local-only operation.
 The plugin has no raw diff byte cap of its own; Tern's process-output limit is
 16 MiB. `max_diff_lines` controls selection after the diff has been fetched,
 not how many bytes `gh` may return.
 
-One `omp -p --no-tools --no-session --mode text --model <model> @prompt.md`
-call per tour. The prompt carries the PR title, body, commit messages and every
-toured hunk with an id (`f<file>h<hunk>`). The answer must be JSON; the plugin
+Before sending PR content, the plugin starts omp in RPC mode with no prompt
+and checks its actual callable-tool registry. A nonempty registry, failed
+check, or unsupported RPC response refuses generation and shows the plain diff.
+The check has a five-second timeout and does not call the model.
+
+Both launches use the bundled `omp-isolated.yml` as a run-only `--config`
+overlay, disabling discovered MCP servers, ambient project instructions and
+automatic tool additions without changing your omp settings. They also use
+`--no-tools --no-extensions --no-skills --no-rules --no-lsp --no-session --no-title`,
+a fixed `--system-prompt` and an empty `--append-system-prompt`.
+`--no-tools` alone disables built-ins, **not MCP**. The overlay's provider IDs
+were checked against omp 18.8.4; the registry check fails closed if tools remain
+exposed in another version. This is not an OS sandbox. PR text remains a
+prompt-injection surface: even without tools, malicious instructions may
+mislead the model's explanations. Review the underlying diff yourself.
+
+After the check, one `omp -p --mode text --model <model> @prompt.md`
+model call generates the tour, with the same isolation options.
+The prompt carries the PR title, body, commit messages and every toured hunk
+with an id (`f<file>h<hunk>`). The answer must be JSON; the plugin
 extracts the outermost `{…}` and repairs it so every hunk id appears exactly
 once: unknown ids are dropped, repeats keep their first step, forgotten hunks
 land in a final **Other changes** step. An answer with no usable step at all
@@ -109,25 +130,29 @@ cached.
   a plain-diff fallback because there is no diff to render.
 - **Backend missing or cannot start:** install `gh` and `omp`, ensure your login
   shell can find them, or set `gh_path` / `omp_path` to their absolute paths.
-  Spawn errors have the corresponding `gh:` or `omp:` prefix.
+  Spawn errors have the corresponding `gh:` or `omp failed:` prefix.
 - **Model failure or timeout:** check that the configured omp model works.
   Failures show `omp failed: <first stderr line>` or
   `tour generation timed out after <n>s`; adjust `timeout_s` if needed.
 - **Invalid JSON:** `model returned invalid JSON: <reason>` means the model did
   not return a usable tour. Try `r` or a different model selector.
+- **Tools exposed or verification failed:** `omp exposes tools; refusing to send
+  PR content` or `omp: could not verify disabled tools` means no PR content was
+  sent for generation. Use an omp version supporting the registry check and
+  bundled isolation settings; do not bypass the check for untrusted PRs.
 
 After a diff has been fetched, tour-generation failures show the selected
 files as a plain diff, one card per file. Failed tours are not cached.
 
 ## Contributing and testing
 
-CI compiles every module with Luau and runs the unit tests on each push and pull
-request. The same checks locally, with the [Luau CLI](https://github.com/luau-lang/luau/releases)
+CI compiles every module with Luau and runs the unit tests on pushes to master
+and pull requests targeting master. The same checks locally, with the [Luau CLI](https://github.com/luau-lang/luau/releases)
 (CI pins 0.741):
 
 ```sh
-luau-compile --null config.luau host.luau tour.luau window.luau
-LUAU=luau bash test/unit.sh
+luau-compile --null bins.luau config.luau host.luau tour.luau window.luau
+bash test/unit.sh
 ```
 
 Fixtures live in `test/fixtures`; the unit suite exercises the diff parser,
@@ -136,12 +161,15 @@ Render checks need a real Tern window, `tern` and `jq`:
 
 ```sh
 bash test/e2e.sh
+# Optional real omp MCP-discovery regression (no model/API call):
+PR_TOUR_REAL_OMP="$(command -v omp)" bash test/e2e.sh
 ```
 
 The end-to-end script links this checkout in private Tern config/state/cache
 and uses fake `gh` and `omp`, leaving your normal plugin links untouched. It
-covers a fresh tour, cached reopen, `r` regeneration, a failing model and
-backend spawn failures.
+covers a fresh tour, cached reopen, `r` regeneration, a failing model, backend
+spawn failures, timeout, invalid model JSON, gh authentication/access failures,
+malformed PR metadata and refusal of a backend exposing tools.
 
 Screenshots: both come from a real window against the public PR
 `charliemartin0/tern-graphite#3` with real `gh` and `omp`; `fallback.png` uses
