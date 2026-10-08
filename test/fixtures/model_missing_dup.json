@@ -1,0 +1,54 @@
+{
+ "steps": [
+  {
+   "title": "Add the send_mode setting",
+   "what": "Adds the config key.",
+   "why": "Lets users pick.",
+   "hunks": [
+    "f2h1",
+    "f2h2",
+    "f2h3",
+    "f2h4",
+    "f2h5",
+    "f2h6"
+   ]
+  },
+  {
+   "title": "Use send_mode in the inbox",
+   "what": "Reads send_mode.",
+   "why": "",
+   "hunks": [
+    "f3h1",
+    "f2h1",
+    "f9h9",
+    "f4h1",
+    "f4h2",
+    "f4h3",
+    "f4h4",
+    "f4h5",
+    "f4h6",
+    "f4h7"
+   ]
+  },
+  {
+   "title": "Tests",
+   "what": "Seeds send_mode.",
+   "why": "Covers both modes.",
+   "hunks": [
+    "f5h1",
+    "f5h2"
+   ]
+  },
+  {
+   "title": "Docs",
+   "what": "README.",
+   "why": "Explains it.",
+   "hunks": [
+    "f1h1",
+    "f1h2",
+    "f1h3",
+    "f1h4"
+   ]
+  }
+ ]
+}

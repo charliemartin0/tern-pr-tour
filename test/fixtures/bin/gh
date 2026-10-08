@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fake gh: `gh pr diff ...` and `gh pr view ...` serve the fixtures.
+fx=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+case "$1 $2" in
+	"pr diff") cat "$fx/pr.diff" ;;
+	"pr view") cat "$fx/pr_view.json" ;;
+	*) echo "fake gh: unsupported: $*" >&2; exit 2 ;;
+esac

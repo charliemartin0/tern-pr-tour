@@ -1,0 +1,362 @@
+diff --git a/README.md b/README.md
+index 3a97a8b..5c91912 100644
+--- a/README.md
++++ b/README.md
+@@ -30,10 +30,15 @@ configured to show, with a merge-status badge on every row.
+   than being truncated.
+ - **Row actions**: check out into a fresh git worktree (for any open PR with a
+   branch — yours or others'; an existing worktree at the configured path is
+-  reused); **Send to agent** (yours and others'). The clickable title opens the
++  reused); **Copy prompt** / **Send to agent** (see `send_mode`; yours and others'). The clickable title opens the
+   PR in Graphite.
+ - Pull-request detail status overrides stale section-summary status; completed
+   PRs still listed in `Drafts` are omitted.
++- Merge-status requests are batched at 25 PRs to avoid Graphite rejecting
++  large inboxes with HTTP 413. If detail or merge-status enrichment fails,
++  the inbox still updates and the footer shows `partial fetch: <reason>`;
++  an updated timestamp confirms the inbox list was fetched, not that every
++  enrichment request succeeded.
+ - **Comment counts**: rows whose merge status is `changes requested` or
+   `unresolved comments` show an unresolved review-thread count fetched via the
+   `gh` CLI (optional; the inbox renders without it). The count is available as
+@@ -80,12 +85,14 @@ falls back to all defaults and surfaces the error in the dock.
+ | `pr_title_first`       | `true`                                                                   | Put the PR title on its own first line; `false` appends the configured metadata fields inline after the title. |
+ | `pr_metadata_fields`   | `["author","repo","status","age"]`                                      | Metadata fields to display, in order. Allowed: `author`, `repo`, `branch`, `status`, `age`. Add `branch` to show it; `[]` hides all metadata. |
+ | `pr_branch_max_chars`  | `36`                                                                     | Maximum displayed branch length when `branch` is included; long names are middle-truncated. Clamped to 12..120. |
++| `show_checkout_button` | `true`                                                                  | Show the per-PR **Checkout** button in the inbox. `false` hides it and the checkout action is rejected. Does not affect the stack tab's `gt checkout`. |
+ | `worktree_dir`        | `".gt-worktrees"`                                                        | Subdir under the repo for checkout worktrees. Used only when `worktree_path` is empty (legacy). |
+ | `worktree_path`       | `""`                                                                     | Template for the checkout worktree path. Empty → legacy `{repo_root}/{worktree_dir}/{branch}`. When set, substitutes `{repo_root}`, `{repo}`, `{branch}`, `{number}` — e.g. `"{repo_root}/../{repo}-pr{number}"` or `"~/gc/sb-pr{number}"`. |
+ | `gt_path`             | `""`                                                                     | Absolute path to `gt`; empty → resolve via `command -v gt`. |
+ | `tern_path`           | `""`                                                                     | Absolute path to `tern`; empty → resolve via `command -v tern`. |
+ | `gh_path`             | `""`                                                                     | Absolute path to `gh`; empty → resolve via `command -v gh`. `gh` is optional — used only for unresolved-comment counts; the inbox works without it. |
+-| `send_submit_default` | `false`                                                                  | Initial state of the send picker's submit toggle: `false` = paste only (review before sending), `true` = paste + Enter. |
++| `send_mode`           | `"clipboard"`                                                            | What the send buttons do. `"clipboard"` copies the rendered prompt (buttons read **Copy prompt** / **Copy stack prompt**); `"pane"` opens the pane picker (buttons read **Send to agent** / **Send stack to agent**). Any other value falls back to `"clipboard"`. |
++| `send_submit_default` | `false`                                                                  | Initial state of the send picker's submit toggle in `pane` mode: `false` = paste only (review before sending), `true` = paste + Enter. |
+ | `transition_toast`    | `false`                                                                  | Toast when a PR newly appears in "Needs your review" or "Returned to you". |
+ | `prompts.review`       | `"Review PR #{number} {title} {url}. Don't post comments, just tell me in chat"` | Sent for someone else's PR. |
+ | `prompts.address`      | `"Address the requested changes on PR #{number} {url}"`                 | Sent for your own PR. |
+@@ -100,7 +107,11 @@ Unknown `{name}` is left as-is; `%` in values is safe.
+ 
+ ## Send to agent
+ 
+-**Send to agent** lists live panes via `tern ls --json`, flags a pane as an agent
++`send_mode` selects what the send buttons do. The default, `"clipboard"`, copies
++the rendered prompt to the clipboard so you can paste it into any agent; it does
++not depend on pane detection. Set `"send_mode": "pane"` for the picker below.
++
++In `pane` mode **Send to agent** lists live panes via `tern ls --json`, flags a pane as an agent
+ pane when its lowercased title or program contains any lowercased
+ `agent_patterns` entry, defaults to the most recently focused agent pane (else
+ the focused pane), and pastes the rendered prompt with
+@@ -186,6 +197,7 @@ uses a fresh daemon and isolated state; needs `tern` and `jq`):
+ 
+ ```sh
+ bash test/checkout_scope.sh
++SHOW_CHECKOUT=false bash test/checkout_scope.sh   # expects zero Checkout badges
+ ```
+ 
+ `window_start` fires once per plugin per window, so the auto-open only triggers
+diff --git a/config.luau b/config.luau
+index fc0b1cb..6694e8e 100644
+--- a/config.luau
++++ b/config.luau
+@@ -14,6 +14,9 @@ export type Prompts = {
+ 	address_stack: string,
+ }
+ 
++-- "clipboard": the send buttons copy the prompt. "pane": they open the pane picker.
++export type SendMode = "clipboard" | "pane"
++
+ export type Config = {
+ 	poll_seconds: number,
+ 	max_prs_per_section: number,
+@@ -25,6 +28,8 @@ export type Config = {
+ 	tern_path: string,
+ 	gh_path: string,
+ 	send_submit_default: boolean,
++	send_mode: SendMode,
++	show_checkout_button: boolean,
+ 	transition_toast: boolean,
+ 	pr_title_first: boolean,
+ 	pr_metadata_fields: { string },
+@@ -43,6 +48,8 @@ local DEFAULTS: Config = {
+ 	tern_path = "",
+ 	gh_path = "",
+ 	send_submit_default = false,
++	send_mode = "clipboard",
++	show_checkout_button = true,
+ 	transition_toast = false,
+ 	pr_title_first = true,
+ 	pr_metadata_fields = { "author", "repo", "status", "age" },
+@@ -83,7 +90,9 @@ local function defaults_copy(): Config
+ 		gt_path = d.gt_path,
+ 		tern_path = d.tern_path,
+ 		gh_path = d.gh_path,
++		show_checkout_button = d.show_checkout_button,
+ 		send_submit_default = d.send_submit_default,
++		send_mode = d.send_mode,
+ 		transition_toast = d.transition_toast,
+ 		pr_title_first = d.pr_title_first,
+ 		pr_metadata_fields = { table.unpack(d.pr_metadata_fields) },
+@@ -148,6 +157,14 @@ local function list_or(data: any, key: string, default: { string }): { string }
+ 	return out
+ end
+ 
++local function send_mode_or(data: any, default: SendMode): SendMode
++	local v = data.send_mode
++	if v == "clipboard" or v == "pane" then
++		return v
++	end
++	return default
++end
++
+ local function bool_or(data: any, key: string, default: boolean): boolean
+ 	local v = data[key]
+ 	return if type(v) == "boolean" then v else default
+@@ -226,11 +243,13 @@ function M.load(): (Config, string?)
+ 		gt_path = str_or(data, "gt_path", M.DEFAULTS.gt_path),
+ 		tern_path = str_or(data, "tern_path", M.DEFAULTS.tern_path),
+ 		gh_path = str_or(data, "gh_path", M.DEFAULTS.gh_path),
++		show_checkout_button = bool_or(data, "show_checkout_button", M.DEFAULTS.show_checkout_button),
+ 		send_submit_default = (function(): boolean
+ 			local v = data.send_submit_default
+ 			if type(v) == "boolean" then return v end
+ 			return M.DEFAULTS.send_submit_default
+ 		end)(),
++		send_mode = send_mode_or(data, M.DEFAULTS.send_mode),
+ 		transition_toast = (function(): boolean
+ 			local v = data.transition_toast
+ 			if type(v) == "boolean" then return v end
+diff --git a/graphite.luau b/graphite.luau
+index c5cbd0f..08d2f7d 100644
+--- a/graphite.luau
++++ b/graphite.luau
+@@ -282,30 +282,41 @@ function M.pr_info(ctx: Ctx, owner: string, name: string, numbers: { number }, d
+ 	end)
+ end
+ 
++-- The endpoint answers HTTP 413 for large batches (50 PRs fails, 40 works),
++-- so the PR list is split into chunks of MERGEABILITY_CHUNK.
++local MERGEABILITY_CHUNK = 25
++
+ -- POST /graphite/mergeability-status. done(byNumber?, err?)
++-- Fails with the first chunk error; results from other chunks are dropped then.
+ function M.mergeability(ctx: Ctx, owner: string, name: string, numbers: { number }, done: (byNumber: { [number]: string }?, err: ApiError?) -> ())
+-	local body = { repoOwner = owner, repoName = name, prNumbers = numbers }
+-	do_request(ctx, "POST", "/graphite/mergeability-status", body, function(data, err)
+-		if err then
+-			done(nil, err)
+-			return
+-		end
+-		local statuses = data.mergeabilityStatuses
+-		if type(statuses) ~= "table" then
+-			done(nil, { kind = "parse", message = "mergeability-status: no mergeabilityStatuses" })
+-			return
+-		end
+-		local out: { [number]: string } = {}
+-		for _, s in statuses do
+-			if type(s) == "table" and s.prNumber ~= nil then
+-				local st = s.mergeabilityStatus
+-				if type(st) == "string" then
+-					out[s.prNumber] = st
++	local out: { [number]: string } = {}
++	local first_err: ApiError? = nil
++	local chunks = math.max(1, math.ceil(#numbers / MERGEABILITY_CHUNK))
++	local pending = chunks
++	for c = 1, chunks do
++		local batch = table.move(numbers, (c - 1) * MERGEABILITY_CHUNK + 1, math.min(c * MERGEABILITY_CHUNK, #numbers), 1, {})
++		local body = { repoOwner = owner, repoName = name, prNumbers = batch }
++		do_request(ctx, "POST", "/graphite/mergeability-status", body, function(data, err)
++			if err then
++				if not first_err then first_err = err end
++			elseif type(data.mergeabilityStatuses) ~= "table" then
++				if not first_err then first_err = { kind = "parse", message = "mergeability-status: no mergeabilityStatuses" } end
++			else
++				for _, s in data.mergeabilityStatuses do
++					if type(s) == "table" and s.prNumber ~= nil then
++						local st = s.mergeabilityStatus
++						if type(st) == "string" then
++							out[s.prNumber] = st
++						end
++					end
+ 				end
+ 			end
+-		end
+-		done(out, nil)
+-	end)
++			pending -= 1
++			if pending == 0 then
++				if first_err then done(nil, first_err) else done(out, nil) end
++			end
++		end)
++	end
+ end
+ 
+ return M
+diff --git a/host.luau b/host.luau
+index 4139aa5..51da4b3 100644
+--- a/host.luau
++++ b/host.luau
+@@ -530,15 +530,22 @@ local function pr_metadata(state: State, pr: common.PR, now: number): { Span | s
+ 	return out
+ end
+ 
++local function send_label(state: State, stack: boolean): string
++	if state.cfg.send_mode == "clipboard" then
++		return if stack then "Copy stack prompt" else "Copy prompt"
++	end
++	return if stack then "Send stack to agent" else "Send to agent"
++end
++
+ local function pr_actions(state: State, pr: common.PR): Node
+ 	local p = pr.repo .. "/" .. tostring(pr.number)
+ 	local buttons: { Node } = {}
+-	-- Only offer checkout when this block was opened in the PR's repo.
++	-- Only offer checkout when enabled and this block was opened in the PR's repo.
+ 	-- Keep the handler-side check too; UI visibility is not authorization.
+-	if state.repo and pr.repo == state.repo.nwo and pr.branch and pr.branch ~= "" then
++	if state.cfg.show_checkout_button and state.repo and pr.repo == state.repo.nwo and pr.branch and pr.branch ~= "" then
+ 		table.insert(buttons, badge("Checkout", "checkout:" .. p, "muted"))
+ 	end
+-	table.insert(buttons, badge("Send to agent", (if pr.mine then "send-mine:" else "send:") .. p, "accent"))
++	table.insert(buttons, badge(send_label(state, false), (if pr.mine then "send-mine:" else "send:") .. p, "accent"))
+ 	return ui.row(buttons)
+ end
+ local function render_pr(state: State, pr: common.PR, now: number, stacked: boolean): Node
+@@ -630,7 +637,7 @@ local function render_section(state: State, sec: Section, now: number): Node
+ 				local payload = "send-stack:" .. (if all_mine then "mine" else "rev") .. ":" .. table.concat(ids, ",")
+ 				table.insert(children, ui.row({
+ 					ui.text({ ui.span("Stack · " .. tostring(#g.prs) .. " PRs", "strong accent") }),
+-					badge("Send stack to agent", payload, "accent"),
++					badge(send_label(state, true), payload, "accent"),
+ 				}))
+ 			end
+ 			for _, pr in g.prs do
+@@ -818,7 +825,7 @@ local function dock_view(state: State): Node
+ 		table.insert(status, ui.span("  refreshing…", "muted"))
+ 	end
+ 	if state.problem then
+-		table.insert(status, ui.span("  last fetch failed", "warning"))
++		table.insert(status, ui.span("  " .. state.problem.text, "warning"))
+ 	end
+ 	if state.cfg_error then
+ 		table.insert(status, ui.span("  " .. state.cfg_error, "warning"))
+@@ -896,6 +903,10 @@ local function open_pane(state: State, cwd: string, command: string)
+ end
+ 
+ local function do_checkout(state: State, pr: common.PR)
++	if not state.cfg.show_checkout_button then
++		state.cx:toast("error", "Checkout is disabled", "Set show_checkout_button to true in config.json.")
++		return
++	end
+ 	local r = state.repo
+ 	if not r or pr.repo ~= r.nwo then
+ 		state.cx:toast("error", "Checkout only for the focused repo", "Open " .. pr.repo .. " in a pane to work there.")
+@@ -1043,6 +1054,18 @@ prompt_for = function(prs: { common.PR }, mine: boolean, cfg: config.Config): st
+ 	return config.render(if mine then p.address_stack else p.review_stack, { prs = joined })
+ end
+ 
++-- Send button entry point: copy the prompt, or open the pane picker.
++local function start_send(state: State, prs: { common.PR }, mine: boolean)
++	if state.cfg.send_mode == "clipboard" then
++		state.cx:copy(prompt_for(prs, mine, state.cfg))
++		local what = if #prs == 1 then "PR #" .. tostring(prs[1].number) else tostring(#prs) .. " PRs"
++		state.cx:toast("success", "Prompt copied", what .. " — paste it into your agent.")
++		return
++	end
++	state.send = { prs = prs, mine = mine, submit = state.cfg.send_submit_default }
++	list_panes(state)
++end
++
+ local function gt_pane(state: State, args: { string }, confirm: boolean, label: string)
+ 	if not state.repo then
+ 		state.cx:toast("error", "No focused repo")
+@@ -1123,8 +1146,7 @@ local function handle_action(state: State, act: string, cx: BlockCx, ev: UiEvent
+ 		end
+ 		if #prs == 0 then return end
+ 		table.sort(prs, function(a, b) return (a.stackDepth or 0) < (b.stackDepth or 0) end)
+-		state.send = { prs = prs, mine = mine, submit = state.cfg.send_submit_default }
+-		list_panes(state)
++		start_send(state, prs, mine)
+ 		cx:render() return
+ 	end
+ 	-- Open / send / checkout: parse "kind:repo/number".
+@@ -1143,8 +1165,7 @@ local function handle_action(state: State, act: string, cx: BlockCx, ev: UiEvent
+ 		do_checkout(state, pr) return
+ 	end
+ 	if kind == "send" or kind == "send-mine" then
+-		state.send = { prs = { pr }, mine = (kind == "send-mine"), submit = state.cfg.send_submit_default }
+-		list_panes(state)
++		start_send(state, { pr }, kind == "send-mine")
+ 		cx:render() return
+ 	end
+ 	-- gt actions (stack tab).
+diff --git a/test/checkout_scope.sh b/test/checkout_scope.sh
+index dbb199b..ccc68ee 100755
+--- a/test/checkout_scope.sh
++++ b/test/checkout_scope.sh
+@@ -63,6 +63,18 @@ if [ "$expect_match" -lt 1 ] || [ "$expect_other" -lt 1 ]; then
+ 	exit 1
+ fi
+ 
++# SHOW_CHECKOUT=false seeds show_checkout_button=false and expects no Checkout
++# badges at all. SEND_MODE=pane seeds send_mode=pane and expects the
++# "Send to agent" label; the default (clipboard) renders "Copy prompt".
++show_checkout="${SHOW_CHECKOUT:-true}"
++send_mode="${SEND_MODE:-clipboard}"
++send_label="Copy prompt"
++[ "$send_mode" = "pane" ] && send_label="Send to agent"
++[ "$show_checkout" = "false" ] && expect_match=0
++mkdir -p "$state/tern/plugin-data/graphite"
++jq -n --argjson c "$show_checkout" --arg m "$send_mode" '{show_checkout_button: $c, send_mode: $m}' \
++	>"$state/tern/plugin-data/graphite/config.json" || { echo "FAIL: could not seed config.json"; exit 1; }
++
+ # Use a fresh daemon so the test loads the linked checkout's current code, and
+ # an isolated state dir so user hidden_sections/config cannot affect the oracle.
+ TERN_DAEMON_SOCKET="$daemon_socket" XDG_STATE_HOME="$state" \
+@@ -93,7 +105,7 @@ a11y=""; sends=0; checkouts=0
+ for _ in $(seq 1 60); do
+ 	kill -0 "$pid" 2>/dev/null || break
+ 	if a11y=$(tern ctl --control "$sock" a11y 2>/dev/null); then
+-		sends=$(printf '%s\n' "$a11y" | jq '[.. | strings | select(. == "Send to agent")] | length' 2>/dev/null)
++		sends=$(printf '%s\n' "$a11y" | jq --arg l "$send_label" '[.. | strings | select(. == $l)] | length' 2>/dev/null)
+ 		[ "$sends" -ge "$expect_total" ] && break
+ 	fi
+ 	sleep 0.5
+@@ -101,14 +113,14 @@ done
+ checkouts=$(printf '%s\n' "$a11y" | jq '[.. | strings | select(. == "Checkout")] | length' 2>/dev/null)
+ 
+ if [ "$sends" -lt "$expect_total" ]; then
+-	echo "FAIL: fixture did not render (Send to agent rows: $sends, expected >= $expect_total)"
++	echo "FAIL: fixture did not render ($send_label rows: $sends, expected >= $expect_total)"
+ 	echo "--- tern log ---"; cat "$log"
+ 	echo "--- a11y ---"; printf '%s\n' "$a11y"
+ 	exit 1
+ fi
+ if [ "$checkouts" -ne "$expect_match" ]; then
+-	echo "FAIL: Checkout badges=$checkouts, expected $expect_match (matching $focus=$expect_match, non-matching=$expect_other)"
++	echo "FAIL: Checkout badges=$checkouts, expected $expect_match (show_checkout_button=$show_checkout, matching $focus, non-matching=$expect_other)"
+ 	echo "--- a11y ---"; printf '%s\n' "$a11y"
+ 	exit 1
+ fi
+-echo "PASS: Checkout badges=$checkouts == matching $focus PRs ($expect_match); non-matching branch-bearing open PRs=$expect_other"
++echo "PASS: Checkout badges=$checkouts == $expect_match (show_checkout_button=$show_checkout); $send_label badges=$sends (send_mode=$send_mode); non-matching branch-bearing open PRs=$expect_other"
+diff --git a/yarn.lock b/yarn.lock
+index 1111111..2222222 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -1,3 +1,3 @@
+ # yarn lockfile v1
+-left-pad@1.0.0:
++left-pad@1.1.0:
+   version "1.1.0"
+diff --git a/src/a.min.js b/src/a.min.js
+index 3333333..4444444 100644
+--- a/src/a.min.js
++++ b/src/a.min.js
+@@ -1 +1 @@
+-var a=1;
++var a=2;
+diff --git a/img.png b/img.png
+index 5555555..6666666 100644
+Binary files a/img.png and b/img.png differ

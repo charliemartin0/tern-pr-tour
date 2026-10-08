@@ -1,0 +1,269 @@
+--!nonstrict
+-- Unit tests for tour.luau and config.luau. Run through test/unit.sh, which
+-- passes the fixtures as arguments (the Luau CLI has no file I/O):
+--   bash test/unit.sh
+-- No Tern, daemon or network needed; test/e2e.sh is the real-window check.
+
+local diff_text, model_ok, model_bad = ...
+
+local shim = require("./json_shim")
+
+local tour = require("../tour")
+tour.decode = shim.decode
+local config = require("../config")
+
+local failures = 0
+local count = 0
+
+local function check(name, cond, detail)
+	count += 1
+	if not cond then
+		failures += 1
+		print("FAIL: " .. name .. (if detail ~= nil then " (" .. tostring(detail) .. ")" else ""))
+	end
+end
+
+local function eq(name, got, want)
+	check(name, got == want, "got " .. tostring(got) .. ", want " .. tostring(want))
+end
+
+local function joined(t)
+	return table.concat(t, ",")
+end
+
+-- ---------- parser ----------
+
+local files = tour.parse_diff(diff_text)
+eq("file count", #files, 8)
+local want_paths = { "README.md", "config.luau", "graphite.luau", "host.luau", "test/checkout_scope.sh", "yarn.lock", "src/a.min.js", "img.png" }
+local want_hunks = { 4, 6, 1, 7, 3, 1, 1, 0 }
+for i, p in want_paths do
+	eq("path " .. i, files[i].path, p)
+	eq("hunk count " .. p, #files[i].hunks, want_hunks[i])
+end
+eq("hunk id first", files[1].hunks[1].id, "f1h1")
+eq("hunk id host.luau last", files[4].hunks[7].id, "f4h7")
+eq("old_start", files[1].hunks[2].old_start, 80)
+eq("new_start", files[1].hunks[2].new_start, 85)
+eq("hunk without count", files[7].hunks[1].old_start, 1)
+check("png is binary", files[8].binary)
+check("md is not binary", not files[1].binary)
+check("hunk lines kept", #files[1].hunks[1].lines > 3 and files[1].hunks[1].header:sub(1, 2) == "@@")
+check("ids stable", tour.parse_diff(diff_text)[4].hunks[3].id == files[4].hunks[3].id)
+
+-- A deleted line that starts with "-- " is a hunk line, not a file header; a
+-- deleted file keeps its path from the `diff --git` line.
+local tricky = table.concat({
+	"diff --git a/a.sql b/a.sql",
+	"index 1..2 100644",
+	"--- a/a.sql",
+	"+++ b/a.sql",
+	"@@ -1,3 +1,2 @@",
+	" select 1;",
+	"--- drop comment",
+	"+++ not a header",
+	"-x",
+	"diff --git a/gone.txt b/gone.txt",
+	"deleted file mode 100644",
+	"--- a/gone.txt",
+	"+++ /dev/null",
+	"@@ -1 +0,0 @@",
+	"-bye",
+	"\\ No newline at end of file",
+	"",
+}, "\n")
+local tf = tour.parse_diff(tricky)
+eq("tricky file count", #tf, 2)
+eq("tricky hunk lines", #tf[1].hunks[1].lines, 4)
+eq("deleted file path", tf[2].path, "gone.txt")
+eq("deleted file lines", #tf[2].hunks[1].lines, 2)
+eq("empty diff", #tour.parse_diff(""), 0)
+
+-- Paths with spaces carry a trailing TAB on ---/+++; non-ASCII names are quoted.
+local spaced = tour.parse_diff("diff --git a/my file.min.js b/my file.min.js\n--- a/my file.min.js\t\n+++ b/my file.min.js\t\n@@ -1 +1 @@\n-a\n+b\n")
+eq("path with space", spaced[1].path, "my file.min.js")
+eq("path with space has no old_path", spaced[1].old_path, nil)
+check("spaced path still matches glob", tour.glob_match("*.min.js", spaced[1].path))
+local quoted = tour.parse_diff('diff --git "a/caf\\303\\251.txt" "b/caf\\303\\251.txt"\n--- "a/caf\\303\\251.txt"\n+++ "b/caf\\303\\251.txt"\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/next.txt b/next.txt\n--- a/next.txt\n+++ b/next.txt\n@@ -1 +1 @@\n-c\n+d\n')
+eq("quoted header: file count", #quoted, 2)
+eq("quoted header: decoded path", quoted[1].path, "caf\195\169.txt")
+eq("quoted header: hunks stay with their file", #quoted[1].hunks, 1)
+eq("quoted header: next file intact", quoted[2].path, "next.txt")
+local bs = tour.parse_diff('diff --git "a/x\\\\303" "b/x\\\\303"\n--- "a/x\\\\303"\n+++ "b/x\\\\303"\n@@ -1 +1 @@\n-a\n+b\n')
+eq("quoted backslash before digits is not octal", bs[1].path, "x\\303")
+
+-- ---------- glob / skip filter ----------
+
+local globs = config.defaults().skip_globs
+check("glob *.lock nested", tour.glob_match("*.lock", "a/b/c.lock"))
+check("glob *.lock needs suffix", not tour.glob_match("*.lock", "a/lockfile.txt"))
+check("glob ** dir", tour.glob_match("**/generated/**", "a/generated/b/c.cs"))
+check("glob ** dir at root", tour.glob_match("**/generated/**", "generated/x.cs"))
+check("glob dist/**", tour.glob_match("dist/**", "dist/a/b.js"))
+check("glob dist/** is anchored", not tour.glob_match("dist/**", "src/dist.js"))
+check("glob escapes dots", not tour.glob_match("*.min.js", "app-min-js"))
+check("glob ?", tour.glob_match("a?.txt", "ab.txt") and not tour.glob_match("a?.txt", "a/.txt"))
+check("glob * stays in segment", not tour.glob_match("src/*.js", "src/a/b.js"))
+
+eq("skip yarn.lock", (tour.skip_reason(files[6], globs) or ""):sub(1, 13), "lockfile/gene")
+check("skip names the glob", (tour.skip_reason(files[6], globs) or ""):find("*.lock", 1, true) ~= nil)
+check("skip min.js", tour.skip_reason(files[7], globs) ~= nil)
+eq("skip binary", tour.skip_reason(files[8], globs), "binary")
+eq("tour host.luau", tour.skip_reason(files[4], globs), nil)
+local gen = tour.parse_diff("diff --git a/x.cs b/x.cs\n--- a/x.cs\n+++ b/x.cs\n@@ -1 +1 @@\n-a\n+// <auto-generated>\n")
+eq("skip generated marker", tour.skip_reason(gen[1], {}), "generated")
+local mode_only = tour.parse_diff("diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n")
+eq("skip no textual changes", tour.skip_reason(mode_only[1], {}), "no textual changes")
+
+local toured, not_toured, capped = tour.select_toured(files, globs, 3000)
+eq("toured count", #toured, 5)
+eq("not toured count", #not_toured, 3)
+check("not capped", not capped)
+eq("not toured reason binary", not_toured[3].reason, "binary")
+
+local t2, n2, c2 = tour.select_toured(files, globs, 10)
+eq("cap: first file always toured", #t2, 1)
+eq("cap: first is README", t2[1].path, "README.md")
+check("cap flag", c2)
+eq("cap: skipped + over", #n2, 7)
+local over = 0
+for _, s in n2 do if s.reason == "over max_diff_lines" then over += 1 end end
+eq("cap: over count", over, 4)
+
+-- ---------- cache key ----------
+
+eq("cache key", tour.cache_key("acme/w", "12", "abc"), "acme_w__12__abc.json")
+check("cache key varies with sha", tour.cache_key("acme/w", "12", "abc") ~= tour.cache_key("acme/w", "12", "abd"))
+eq("cache key sanitises", tour.cache_key("a b/c", "1", "x:y"), "a_b_c__1__x_y.json")
+
+-- ---------- validation / coverage ----------
+
+local by_id, ids = tour.hunk_index(toured)
+eq("toured hunk ids", #ids, 21)
+check("hunk_index by id", by_id["f4h2"].file.path == "host.luau")
+
+local function coverage_ok(name, steps)
+	local seen = {}
+	local dup = false
+	for _, s in steps do
+		for _, id in s.hunks do
+			if seen[id] then dup = true end
+			seen[id] = true
+		end
+	end
+	local all = true
+	for _, id in ids do if not seen[id] then all = false end end
+	local extra = 0
+	for id in seen do if not by_id[id] then extra += 1 end end
+	check(name .. ": every id exactly once", all and not dup and extra == 0)
+end
+
+local steps, err, problems = tour.validate(model_ok, ids)
+check("ok: no error", steps ~= nil and err == nil, err)
+eq("ok: step count", #steps, 4)
+eq("ok: first title", steps[1].title, "Add the send_mode setting")
+eq("ok: no problems", #problems.unknown + #problems.duplicates + #problems.missing, 0)
+eq("ok: empty why replaced", steps[3].why, tour.NO_WHY)
+check("ok: no Other step", steps[#steps].other == nil)
+coverage_ok("ok", steps)
+
+local fenced = "Sure! Here is the tour:\n```json\n" .. model_ok .. "\n```\nHope that helps."
+local fsteps = tour.validate(fenced, ids)
+check("fenced JSON accepted", fsteps ~= nil and #fsteps == 4)
+
+local bsteps, berr, bp = tour.validate(model_bad, ids)
+check("bad: still usable", bsteps ~= nil and berr == nil, berr)
+eq("bad: unknown dropped", joined(bp.unknown), "f9h9")
+eq("bad: duplicate reported", joined(bp.duplicates), "f2h1")
+eq("bad: missing reported", joined(bp.missing), "f5h3")
+local last = bsteps[#bsteps]
+eq("bad: Other changes last", last.title, "Other changes")
+check("bad: Other flag", last.other == true)
+eq("bad: missing id lands in Other", joined(last.hunks), "f5h3")
+local first_owner
+for i, s in bsteps do
+	for _, id in s.hunks do
+		if id == "f2h1" then first_owner = first_owner or i end
+	end
+end
+eq("bad: duplicate kept in first step", first_owner, 1)
+eq("bad: empty why replaced", bsteps[2].why, tour.NO_WHY)
+coverage_ok("bad", bsteps)
+
+-- A cached "Other changes" step survives re-validation unchanged, and hunks
+-- that became missing since are appended to it instead of making a second one.
+local cached = '{"steps":[{"title":"Core","what":"w","why":"y","hunks":["f1h1"]},{"title":"Other changes","what":"","why":"","other":true,"hunks":["f1h2"]}]}'
+local cs = tour.validate(cached, { "f1h1", "f1h2", "f1h3" })
+eq("cached Other: step count", #cs, 2)
+check("cached Other: flag kept", cs[2].other == true)
+eq("cached Other: why stays empty", cs[2].why, "")
+eq("cached Other: new missing id appended", joined(cs[2].hunks), "f1h2,f1h3")
+
+-- A step whose hunks are all unknown is dropped; a missing `what` becomes "".
+local only_unknown = '{"steps":[{"title":"ghost","what":"x","why":"y","hunks":["zz"]},{"title":"real","why":"r","hunks":["f1h1"]}]}'
+local us = tour.validate(only_unknown, { "f1h1" })
+eq("all-unknown step dropped", #us, 1)
+eq("missing what coerced", us[1].what, "")
+
+-- ---------- fallback ----------
+
+local ghosts, gerr, gp = tour.validate('{"steps":[{"title":"a","what":"x","why":"y","hunks":["nope","also-nope"]}]}', ids)
+check("all-unknown ids -> error, not an Other-only tour", ghosts == nil and gerr ~= nil and gerr:find("no usable steps", 1, true) ~= nil, gerr)
+eq("all-unknown ids still reported", #gp.unknown, 2)
+local empty_steps, eerr = tour.validate('{"steps":[]}', ids)
+check("empty steps array -> error", empty_steps == nil and eerr ~= nil, eerr)
+
+local nsteps, nerr = tour.validate("not json", ids)
+check("invalid JSON -> nil", nsteps == nil)
+check("invalid JSON error text", nerr ~= nil and nerr:find("invalid JSON", 1, true) ~= nil, nerr)
+local _, e2 = tour.validate('{"steps": 3}', ids)
+check("steps not an array", e2 ~= nil and e2:find("invalid JSON", 1, true) ~= nil, e2)
+local _, e3 = tour.validate('{"oops": [}', ids)
+check("malformed JSON", e3 ~= nil and e3:find("invalid JSON", 1, true) ~= nil, e3)
+
+local plain = tour.plain_steps(toured)
+eq("plain: one step per file", #plain, #toured)
+eq("plain: title is path", plain[4].title, "host.luau")
+eq("plain: hunks of file", #plain[4].hunks, 7)
+coverage_ok("plain", plain)
+
+-- ---------- prompt ----------
+
+local commits = tour.commit_messages({
+	{ messageHeadline = "feat: a", messageBody = "Body." },
+	{ messageHeadline = "fix: b", messageBody = "" },
+	"junk",
+})
+eq("commit messages", joined(commits), "feat: a\nBody.,fix: b")
+local prompt = tour.build_prompt({ nwo = "acme/w", number = "7", title = "Add send_mode", body = "Because.", commits = commits }, toured)
+check("prompt has title", prompt:find("Title: Add send_mode", 1, true) ~= nil)
+check("prompt has body", prompt:find("Because.", 1, true) ~= nil)
+check("prompt has commit", prompt:find("- feat: a\n  Body.", 1, true) ~= nil)
+check("prompt has hunk heading", prompt:find("### f1h1 README.md\n@@ -30,10", 1, true) ~= nil)
+check("prompt has last toured hunk", prompt:find("### f5h3 test/checkout_scope.sh", 1, true) ~= nil)
+check("prompt omits skipped files", prompt:find("yarn.lock", 1, true) == nil and prompt:find("img.png", 1, true) == nil)
+check("prompt demands exact why", prompt:find(tour.NO_WHY, 1, true) ~= nil)
+check("prompt demands JSON only", prompt:find('"steps"', 1, true) ~= nil and prompt:find("ONLY JSON", 1, true) ~= nil)
+local np = tour.build_prompt({ nwo = "a/b", number = "1", title = "t", body = "", commits = {} }, toured)
+check("prompt empty body/commits", np:find("(empty)", 1, true) ~= nil and np:find("(none)", 1, true) ~= nil)
+
+-- ---------- config ----------
+
+local d = config.defaults()
+eq("default model", d.model, "@smol")
+eq("default timeout", d.timeout_s, 90)
+eq("default max lines", d.max_diff_lines, 3000)
+local c = config.from_data({ model = "x/y", timeout_s = -5, max_diff_lines = "many", skip_globs = { "a", 3 }, gh_path = "/bin/gh" })
+eq("config model", c.model, "x/y")
+eq("config negative timeout -> default", c.timeout_s, 90)
+eq("config bad lines -> default", c.max_diff_lines, 3000)
+eq("config bad glob list -> default", #c.skip_globs, #d.skip_globs)
+eq("config gh_path", c.gh_path, "/bin/gh")
+eq("config empty model -> default", config.from_data({ model = "" }).model, "@smol")
+eq("config good globs", joined(config.from_data({ skip_globs = { "a", "b" } }).skip_globs), "a,b")
+
+if failures > 0 then
+	print(`{failures} of {count} checks FAILED`)
+	error("unit tests failed")
+end
+print(`PASS {count} checks`)

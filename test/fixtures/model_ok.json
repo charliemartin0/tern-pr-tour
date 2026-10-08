@@ -1,0 +1,53 @@
+{
+ "steps": [
+  {
+   "title": "Add the send_mode setting",
+   "what": "Adds a send_mode config key with clipboard and pane values, defaulting to clipboard.",
+   "why": "Lets users pick between copying the prompt and choosing an agent pane.",
+   "hunks": [
+    "f2h1",
+    "f2h2",
+    "f2h3",
+    "f2h4",
+    "f2h5",
+    "f2h6"
+   ]
+  },
+  {
+   "title": "Use send_mode in the inbox",
+   "what": "The send buttons and prompt flow read send_mode and relabel themselves.",
+   "why": "Copying the prompt is safer than pasting into a pane by default.",
+   "hunks": [
+    "f3h1",
+    "f4h1",
+    "f4h2",
+    "f4h3",
+    "f4h4",
+    "f4h5",
+    "f4h6",
+    "f4h7"
+   ]
+  },
+  {
+   "title": "Cover both modes in the e2e test",
+   "what": "The checkout_scope script seeds send_mode and asserts the badge label.",
+   "why": "",
+   "hunks": [
+    "f5h1",
+    "f5h2",
+    "f5h3"
+   ]
+  },
+  {
+   "title": "Document send_mode",
+   "what": "README describes the new key and its two values.",
+   "why": "Users need to know how to switch back to pane mode.",
+   "hunks": [
+    "f1h1",
+    "f1h2",
+    "f1h3",
+    "f1h4"
+   ]
+  }
+ ]
+}

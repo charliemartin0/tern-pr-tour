@@ -1,0 +1,12 @@
+schema = 1
+id = "pr-tour"
+name = "PR tour"
+version = "0.1.0"
+description = "A guided tour of a pull request's diff: AI-written steps with what and why above grouped hunks, cached per PR head, with a plain-diff fallback."
+icon = "git-pull"
+host = "host.luau"
+window = "window.luau"
+
+[[blocks]]
+id = "tour"
+title = "PR tour"

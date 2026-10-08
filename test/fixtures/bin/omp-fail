@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+[ -n "${OMP_CALLS:-}" ] && echo "$*" >>"$OMP_CALLS"
+echo "model not found" >&2
+exit 1

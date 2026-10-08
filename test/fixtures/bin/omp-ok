@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fake omp: logs each call to $OMP_CALLS, answers with a fenced model_ok.json.
+fx=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+[ -n "${OMP_CALLS:-}" ] && echo "$*" >>"$OMP_CALLS"
+echo '```json'
+cat "$fx/model_ok.json"
+echo '```'

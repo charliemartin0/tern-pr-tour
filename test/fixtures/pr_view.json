@@ -1,0 +1,15 @@
+{
+ "title": "feat: add send_mode config",
+ "body": "Defaults the send buttons to copying the prompt. Set `send_mode` to `pane` for the old picker.",
+ "commits": [
+  {
+   "messageHeadline": "feat: add send_mode config",
+   "messageBody": "Default to clipboard."
+  },
+  {
+   "messageHeadline": "test: cover send_mode",
+   "messageBody": ""
+  }
+ ],
+ "headRefOid": "0123456789abcdef0123456789abcdef01234567"
+}
