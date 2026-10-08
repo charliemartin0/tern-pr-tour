@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 # Fake omp: logs each call to $OMP_CALLS, answers with a fenced model_ok.json.
 fx=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+# The no-prompt RPC probe is not a generation call.
+for ((i = 1; i < $#; i++)); do
+	if [ "${!i}" = "--mode" ]; then
+		next=$((i + 1))
+		if [ "${!next}" = "rpc" ]; then
+			if [ "${OMP_HAS_TOOLS:-0}" = "1" ]; then
+				printf '%s\n' '{"id":"pr-tour-tools","success":true,"data":{"dumpTools":[{"name":"sentinel_tool"}]}}'
+			else
+				printf '%s\n' '{"id":"pr-tour-tools","success":true,"data":{"dumpTools":[]}}'
+			fi
+			exit 0
+		fi
+	fi
+done
 [ -n "${OMP_CALLS:-}" ] && echo "$*" >>"$OMP_CALLS"
 case "${OMP_FIXTURE_MODE:-ok}" in
 	timeout) sleep 5 ;;

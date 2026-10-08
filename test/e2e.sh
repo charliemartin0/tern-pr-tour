@@ -10,6 +10,7 @@
 #   5. omp / 6. gh path that cannot be spawned: an error line, not a stuck spinner.
 #   7. timeout / 8. invalid JSON: error + plain diff, no cache.
 #   9. unsigned / 10. no access / 11. malformed gh JSON: safe error, no model or spinner.
+#   12. tools discovered in omp: refuse generation, render plain diff, no cache.
 # Usage: bash test/e2e.sh        (needs tern and jq)
 set -u
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -103,7 +104,7 @@ assert_no_spinner() {
 }
 
 # Override inherited fixture modes as well as all runtime storage locations.
-export OMP_FIXTURE_MODE=ok GH_FIXTURE_MODE=ok OMP_TIMEOUT_S=90
+export OMP_FIXTURE_MODE=ok GH_FIXTURE_MODE=ok OMP_TIMEOUT_S=90 OMP_HAS_TOOLS=0
 
 # --- 1. fresh run with a working model ---
 cache1="$tmp/cache1"
@@ -224,4 +225,17 @@ for mode in unsigned no-access malformed; do
 	scenario=$((scenario + 1))
 done
 
-echo "PASS: pr-tour e2e (11 scenarios)"
+# --- 12. discovered tools must prevent sending PR content to the model ---
+rm -f "$tmp/omp.calls"
+export GH_FIXTURE_MODE=ok OMP_HAS_TOOLS=1
+cache="$tmp/cache-tools"
+start_stack omp-ok "$cache"
+wait_for "omp exposes tools; refusing to send PR content" 10 || fail "tool-bearing omp was not refused"
+assert_no_spinner
+[ "$(calls)" = "0" ] || fail "tool-bearing omp received a generation call"
+find_scrolled "config.luau" || fail "tool refusal lacks plain diff fallback"
+[ ! -f "$cache/tern-pr-tour/$cache_file" ] || fail "tool-bearing omp wrote a cache"
+echo "ok 12: discovered tools refuse model generation"
+stop_stack
+
+echo "PASS: pr-tour e2e (12 scenarios)"
