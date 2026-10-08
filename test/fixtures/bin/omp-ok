@@ -2,6 +2,10 @@
 # Fake omp: logs each call to $OMP_CALLS, answers with a fenced model_ok.json.
 fx=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 [ -n "${OMP_CALLS:-}" ] && echo "$*" >>"$OMP_CALLS"
+case "${OMP_FIXTURE_MODE:-ok}" in
+	timeout) sleep 5 ;;
+	invalid) printf '%s\n' '{"steps":}'; exit 0 ;;
+esac
 echo '```json'
 cat "$fx/model_ok.json"
 echo '```'
